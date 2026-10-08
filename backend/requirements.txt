@@ -1,0 +1,15 @@
+fastapi
+uvicorn[standard]
+sqlalchemy
+pydantic
+pydantic-settings>=2.6.1
+python-multipart
+google-genai
+opencv-python
+Pillow
+reportlab
+pytest
+pytest-asyncio
+httpx
+python-dotenv
+alembic
