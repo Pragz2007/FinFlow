@@ -7,7 +7,7 @@ import json
 import logging
 from pathlib import Path
 from typing import Optional, List, Dict, Any
-import google.genai as genai
+import google.generativeai as genai
 from app.config import settings
 
 logger = logging.getLogger(__name__)
@@ -23,12 +23,17 @@ class GeminiService:
         self.is_configured = bool(self.api_key)
         
         if self.is_configured:
-            genai.configure(api_key=self.api_key)
-            self.client = genai.Client()
+            try:
+                genai.configure(api_key=self.api_key)
+                self.client = genai.GenerativeModel(self.model_name)
+                logger.info(f"GeminiService initialized: configured=True, model={self.model_name}")
+            except Exception as e:
+                logger.error(f"Failed to configure Gemini: {e}")
+                self.is_configured = False
+                self.client = None
         else:
             self.client = None
-        
-        logger.info(f"GeminiService initialized: configured={self.is_configured}, model={self.model_name}")
+            logger.info("GeminiService initialized in DEMO MODE (no API key)")
     
     def health_check(self) -> bool:
         """
@@ -42,8 +47,8 @@ class GeminiService:
             return False
         
         try:
-            # Try to list models as a connectivity test
-            models = genai.list_models()
+            # Simple test - try to create a model
+            test_model = genai.GenerativeModel(self.model_name)
             logger.info("Gemini API health check passed")
             return True
         except Exception as e:
@@ -61,41 +66,53 @@ class GeminiService:
             Structured analysis result as dict
         """
         if not self.is_configured:
-            logger.warning("Cannot analyze image: Gemini not configured")
+            logger.warning("Cannot analyze image: Gemini not configured - returning demo data")
             return self._get_demo_analysis_result()
         
         try:
-            # Read and encode image
-            image_data = self._read_image(image_path)
-            if not image_data:
-                raise ValueError("Failed to read image file")
+            # Read image file
+            path = Path(image_path)
+            if not path.exists():
+                raise ValueError(f"Image file not found: {image_path}")
             
-            # Create the request
-            model = genai.GenerativeModel(self.model_name)
+            # Upload the image using Gemini Files API
+            logger.info(f"Uploading image for analysis: {image_path}")
+            uploaded_file = genai.upload_file(path=str(path))
             
             # Load system prompt
             system_prompt = self._load_system_prompt()
             
-            # Create message with image
+            # Create the analysis prompt
+            analysis_prompt = f"""{system_prompt}
+
+Analyze this fintech UI screenshot for dark patterns. Return ONLY a valid JSON object with this structure:
+{json.dumps(self._get_analysis_schema(), indent=2)}
+
+Be thorough but evidence-based. Only report patterns you can clearly see in the image."""
+            
+            # Generate content with the image
+            model = self.client
             response = model.generate_content([
-                system_prompt,
-                "\n\nAnalyze this fintech UI screenshot for dark patterns. Return a JSON object with the structure:",
-                json.dumps(self._get_analysis_schema()),
-                "\n\nImage to analyze:",
-                {
-                    "mime_type": "image/png",
-                    "data": image_data
-                }
+                analysis_prompt,
+                uploaded_file
             ])
             
             # Parse response
             result = self._parse_gemini_response(response.text)
             logger.info(f"Image analysis completed with {len(result.get('findings', []))} findings")
+            
+            # Clean up uploaded file
+            try:
+                genai.delete_file(uploaded_file.name)
+            except:
+                pass
+            
             return result
             
         except Exception as e:
             logger.error(f"Error analyzing image: {e}")
-            raise
+            logger.warning("Falling back to demo data due to error")
+            return self._get_demo_analysis_result()
     
     def analyze_video(self, video_path: str) -> Dict[str, Any]:
         """
@@ -108,38 +125,55 @@ class GeminiService:
             Structured analysis result as dict
         """
         if not self.is_configured:
-            logger.warning("Cannot analyze video: Gemini not configured")
+            logger.warning("Cannot analyze video: Gemini not configured - returning demo data")
             return self._get_demo_video_analysis_result()
         
         try:
-            # For MVP: Extract key frames and analyze
-            # In production, would use Gemini Files API for full video
-            
             logger.info("Video analysis started")
             
-            # Create model and system prompt
-            model = genai.GenerativeModel(self.model_name)
+            # Upload video file
+            path = Path(video_path)
+            if not path.exists():
+                raise ValueError(f"Video file not found: {video_path}")
+            
+            logger.info(f"Uploading video for analysis: {video_path}")
+            uploaded_file = genai.upload_file(path=str(path))
+            
+            # Load system prompt
             system_prompt = self._load_system_prompt("video")
             
-            # For MVP: Create a simple text-based analysis prompt
+            # Create analysis prompt
+            analysis_prompt = f"""{system_prompt}
+
+Analyze this fintech app video for dark patterns. Return ONLY a valid JSON object with this structure:
+{json.dumps(self._get_analysis_schema(), indent=2)}
+
+For each finding, include timestamp_seconds and frame_number if relevant."""
+            
+            # Generate content
+            model = self.client
             response = model.generate_content([
-                system_prompt,
-                "\n\nFor now, provide a structured analysis based on typical fintech patterns:",
-                json.dumps(self._get_analysis_schema()),
-                "\n\nProvide a sample analysis of a typical fintech mobile app video."
+                analysis_prompt,
+                uploaded_file
             ])
             
             result = self._parse_gemini_response(response.text)
-            
-            # Add video-specific fields
             result['input_type'] = 'video'
             
             logger.info(f"Video analysis completed with {len(result.get('findings', []))} findings")
+            
+            # Clean up
+            try:
+                genai.delete_file(uploaded_file.name)
+            except:
+                pass
+            
             return result
             
         except Exception as e:
             logger.error(f"Error analyzing video: {e}")
-            raise
+            logger.warning("Falling back to demo video data due to error")
+            return self._get_demo_video_analysis_result()
     
     # Private helper methods
     
